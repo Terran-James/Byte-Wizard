@@ -1,6 +1,58 @@
 # Used to create ASCII art for the Byte Wizard title
 import pyfiglet
 
+# Used to get Platform information for the user's computer
+import platform
+
+# Used to get Network information for the user's computer
+import socket
+
+# ==============================
+# User Network Information
+# ==============================
+
+def network_diagnostic():
+    text = "Network Information"
+    ascii_networkInfo = pyfiglet.figlet_format(text)
+
+    print(ascii_networkInfo)
+    print("\nNetwork Information:\n")
+
+    hostname = socket.gethostname()
+    try:
+        ip_address = socket.gethostbyname(hostname)
+    except socket.gaierror:
+        ip_address = "Unavailable"
+
+    print("Hostname: " + hostname)
+    print("IP Address: " + ip_address)
+
+    try:
+        socket.create_connection(("8.8.8.8", 53), timeout=3)
+        print("Internet Connection: Connected")
+    except OSError:
+        print("Internet Connection: Not Connected")
+
+# ==============================
+# User System Information
+# ==============================
+
+def system_info():
+    text = "System Information"
+    ascii_systemInfo = pyfiglet.figlet_format(text)
+
+    print(ascii_systemInfo)
+
+    if platform.system() == "Darwin":
+        operating_system = "macOS"
+    else:
+        operating_system = platform.system()
+
+    print("Operating System: " + operating_system)
+    print("OS Version: " + platform.release())
+    print("Machine Type: " + platform.machine())
+    print("Hostname: " + platform.node())
+    print("Python Version: " + platform.python_version())
 
 # ==============================
 # User Class
@@ -13,6 +65,8 @@ class User:
 
     # Returns a masked version of the email address
     def get_email(self):
+        if self._email == "Not provided":
+            return self._email
         return self._email[0] + "****" + self._email[self._email.index("@"):]
 
     # Returns the actual email for internal comparison
@@ -30,6 +84,8 @@ def main_menu():
     print("3. No sound")
     print("4. Computer won't turn on")
     print("5. Other issues")
+    print("6. System information")
+    print("7. Network information")
 
 
 # ==============================
@@ -229,6 +285,12 @@ def user_troubleshooting():
         elif option == 5:
             other_issues(user)
 
+        elif option == 6:
+            system_info()
+
+        elif option == 7:
+            network_diagnostic()
+
         else:
             print("Invalid option selected.")
             continue
@@ -242,7 +304,7 @@ def user_troubleshooting():
                 "\nThank you " + user.name +
                 " for choosing to use Byte Wizard. Goodbye!"
             )
-            print(ascii_art)
+            print(ascii_title)
             break
 
 
@@ -251,9 +313,9 @@ def user_troubleshooting():
 # ==============================
 
 text = "Byte Wizard"
-ascii_art = pyfiglet.figlet_format(text)
+ascii_title = pyfiglet.figlet_format(text)
 
-print(ascii_art)
+print(ascii_title)
 print("Welcome to the Byte Wizard!\n")
 print("This tool will help you troubleshoot your computer.\n")
 
@@ -272,25 +334,36 @@ while True:
         break
 
 
-# Get and validate user's email
-while True:
-    email_address = input(
-        "\nEnter your email address for further assistance: "
-    )
+# Get and validate user's email address / or if theyd rather not enter it
 
-    if "@" not in email_address or "." not in email_address:
-        print("Invalid email format. Please try again.\n")
-        continue
+email_choice = input(
+    "\nWould you like to provide your email address for further assistance? (yes/no): "
+)
+if email_choice.lower() == "yes":
+    while True:
+        email_address = input(
+            "\nEnter your email address for further assistance: "
+        )
 
-    confirm_email_address = input(
+        if "@" not in email_address or "." not in email_address:
+            print("Invalid email format. Please try again.\n")
+            continue
+
+        confirm_email_address = input(
         "\nPlease re-enter your email address for confirmation: "
-    )
+     )
 
-    if email_address == confirm_email_address:
-        break
+        if email_address == confirm_email_address:
+            break
 
-    else:
-        print("The email addresses do not match. Please try again.\n")
+        else:
+
+            print("The email addresses do not match. Please try again.\n")
+
+else:
+    email_address = "Not provided"
+
+
 
 
 # Create User object
