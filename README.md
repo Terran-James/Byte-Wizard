@@ -38,6 +38,41 @@ Run:
 python byte_wizard.py
 ```
 
+## macOS executable
+
+Byte Wizard can also be run without installing Python. Open Terminal in the
+project folder and run:
+
+```bash
+./releases/macos/Byte-Wizard/Byte-Wizard
+```
+
+The macOS build is created with PyInstaller. To create a fresh build after
+changing the code:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt pyinstaller
+PYINSTALLER_CONFIG_DIR="$PWD/build/pyinstaller-cache" .venv/bin/python -m PyInstaller --noconfirm --clean --name Byte-Wizard --onedir --collect-all pyfiglet --distpath releases/macos --workpath build/pyinstaller --specpath build/pyinstaller byte_wizard.py
+```
+
+The resulting executable is in `releases/macos/Byte-Wizard/`.
+
+## Windows executable
+
+PyInstaller builds for the operating system it is run on. To make a Windows
+`.exe`, run the following commands on a Windows computer from the project
+folder:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt pyinstaller
+.venv\Scripts\python -m PyInstaller --noconfirm --clean --name Byte-Wizard --onedir --collect-all pyfiglet --distpath releases\windows --workpath build\pyinstaller --specpath build\pyinstaller byte_wizard.py
+```
+
+The Windows executable will be at
+`releases\windows\Byte-Wizard\Byte-Wizard.exe`.
+
 ## What I Learned
 
 This project was built as a hands-on Python learning project. It helped me practice:
