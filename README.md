@@ -11,6 +11,8 @@ Byte Wizard is a Python-based command-line IT troubleshooting assistant designed
 -  Other issues
 -  User information and email validation
 -  Return-to-menu functionality
+-  System information
+-  Network information
 
 ## Requirements
 
