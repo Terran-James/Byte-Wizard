@@ -7,6 +7,61 @@ import platform
 # Used to get Network information for the user's computer
 import socket
 
+# Used on MacOS to get route process for defauly gateway
+import subprocess
+
+# Used to get check HTTPS connectivity
+import urllib.request
+
+# ==============================
+# Default Gateway Information
+# ==============================
+
+def get_default_gateway():
+    operating_system = platform.system()
+
+# Funtion for macOS
+    if operating_system == "Darwin":
+        result = subprocess.run(
+            ["route", "-n", "get", "default"],
+            capture_output=True,
+            text=True
+        )
+
+        for line in result.stdout.splitlines():
+            if "gateway:" in line:
+                return line.split()[1]
+            
+# Function for WindowsOS
+    elif operating_system == "Windows":
+        result = subprocess.run(
+            ["ipconfig"],
+            capture_output=True,
+            text=True
+        )
+
+        for line in result.stdout.splitlines():
+            if "Default Gateway" in line:
+                parts = line.split(":")
+                if len(parts) > 1:
+                    gateway = parts[1].strip()
+                    if gateway:
+                        return gateway
+                    
+# Function for LinuxOS
+    elif operating_system == "Linux":
+        result = subprocess.run(
+            ["ip", "route"],
+            capture_output=True,
+            text=True
+        )
+
+        for line in result.stdout.splitlines():
+            if line.startswith("default via"):
+                return line.split()[2]
+
+    return None
+
 # ==============================
 # User Network Information
 # ==============================
@@ -17,6 +72,7 @@ def network_diagnostic():
 
     print(ascii_networkInfo)
     print("\nNetwork Information:\n")
+    print("Running diagnostic....\n")
 
     hostname = socket.gethostname()
     try:
@@ -25,13 +81,90 @@ def network_diagnostic():
         ip_address = "Unavailable"
 
     print("Hostname: " + hostname)
-    print("IP Address: " + ip_address)
+    print("IP Address: " + ip_address + "\n")
 
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=3)
+        internet_status = True
         print("Internet Connection: Connected")
     except OSError:
+        internet_status = False
         print("Internet Connection: Not Connected")
+
+    try:
+        dns_resolution = socket.gethostbyname("google.com")
+        dns_status = True
+        print("DNS Resolution: Working")
+        print(f"Resolved IP: {dns_resolution}")
+    except socket.gaierror:
+        dns_status = False
+        print("DNS Resolution: Not working")
+
+    gateway = get_default_gateway()
+    if gateway:
+        gateway_status = True
+        print(f"Default Gateway: {gateway}")
+    else:
+        gateway_status = False
+        print("Default Gateway: Not Found")
+
+    try:
+        urllib.request.urlopen("https://google.com", timeout=5)
+        https_status = True
+        print("HTTPS Connection: Working")
+    except Exception:
+        https_status = False
+        print("HTTPS Connection: Not Working")
+
+
+# Prints out a summary of the tests ran
+    text = "Summary"
+    ascii_summary = pyfiglet.figlet_format(text)
+    print(ascii_summary)
+
+    if internet_status:
+        internet_result = "PASS"
+    else:
+        internet_result = "FAIL"
+
+    if dns_status:
+        dns_result = "PASS"
+    else:
+        dns_result = "FAIL"
+
+    if gateway_status:
+        gateway_result = "PASS"
+    else:
+        gateway_result = "FAIL"
+
+    if https_status:
+        https_result = "PASS"
+    else:
+        https_result = "FAIL"
+
+    print(f"{'Internet Connection':<25} {internet_result}")
+    print(f"{'DNS Resolution':<25} {dns_result}")
+    print(f"{'Default Gateway':<25} {gateway_result}")
+    print(f"{'HTTPS Connectivity':<25} {https_result}")
+
+# Tells the user of potential issues if anything has failed
+    print("Potential Issue(s)\n")
+    if internet_result == "FAIL":
+        print("An Internet connection could not be established. Check your network connection, router, or Internet Service Provider.")
+    if dns_result == "FAIL":
+        print("DNS resolution appears to be failing. Your computer may be unable to translate domain names into IP addresses.")
+    if gateway_result == "FAIL":
+        print("Your default gateway could not be detected. Your computer may be having trouble communicating with the local network or router.")
+    if https_result == "FAIL":
+        print("HTTPS connectivity failed. Your computer may be experiencing a problem connecting to a secure website.")
+    if (
+        internet_result == "PASS"
+        and dns_result == "PASS"
+        and gateway_result == "PASS"
+        and https_result == "PASS"
+    ):
+        print("No network issues were detected.")
+        
 
 # ==============================
 # User System Information
@@ -42,17 +175,19 @@ def system_info():
     ascii_systemInfo = pyfiglet.figlet_format(text)
 
     print(ascii_systemInfo)
+    print("Running diagnostic....\n")
+    print("\033[1mSummary\033[0m\n")
 
     if platform.system() == "Darwin":
         operating_system = "macOS"
     else:
         operating_system = platform.system()
 
-    print("Operating System: " + operating_system)
-    print("OS Version: " + platform.release())
-    print("Machine Type: " + platform.machine())
-    print("Hostname: " + platform.node())
-    print("Python Version: " + platform.python_version())
+    print(f"Operating System:   {operating_system}")
+    print(f"OS Version:   {platform.release()}")
+    print(f"Machine Type:   {platform.machine()}")
+    print(f"Hostname:   {platform.node()}")
+    print(f"Python Version:  {platform.python_version()}")
 
 # ==============================
 # User Class

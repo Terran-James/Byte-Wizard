@@ -73,6 +73,34 @@ py -m venv .venv
 The Windows executable will be at
 `releases\windows\Byte-Wizard\Byte-Wizard.exe`.
 
+## Recent Changes
+
+### Network Diagnostic Improvements
+
+- Added Internet connectivity testing using a direct connection test.
+- Added DNS resolution testing using `socket.gethostbyname()`.
+- Added default gateway detection with support for:
+  - macOS
+  - Windows
+  - Linux
+- Added HTTPS connectivity testing using `urllib.request`.
+- Added a diagnostic summary displaying PASS/FAIL results for each network test.
+- Improved summary formatting so diagnostic results line up cleanly.
+- Added potential issue reporting based on failed network tests.
+- Added conditional status tracking using Boolean values to allow the diagnostic results to be evaluated later.
+- Added ASCII-formatted diagnostic headings using PyFiglet.
+
+### Current Network Diagnostic
+
+The network diagnostic currently checks:
+
+1. Network connectivity
+2. DNS resolution
+3. Default gateway
+4. HTTPS connectivity
+
+The diagnostic then summarizes the results and identifies potential network issues.
+
 ## What I Learned
 
 This project was built as a hands-on Python learning project. It helped me practice:
