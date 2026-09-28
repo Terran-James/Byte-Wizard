@@ -11,13 +11,14 @@ Byte Wizard is a Python-based command-line IT troubleshooting assistant designed
 -  Other issues
 -  User information and email validation
 -  Return-to-menu functionality
--  System information
--  Network information
+-  System diagnostic
+-  Network diagnostic
 
 ## Requirements
 
 - Python 3.x
 - `pyfiglet`
+- `psutil`
 
 ## Installation
 
@@ -73,7 +74,35 @@ py -m venv .venv
 The Windows executable will be at
 `releases\windows\Byte-Wizard\Byte-Wizard.exe`.
 
-## Recent Changes
+### System Diagnostic Improvements
+
+- Added system information reporting using `platform`.
+- Added CPU usage monitoring using `psutil`.
+- Added memory usage monitoring using `psutil`.
+- Added disk usage and available disk space reporting.
+- Added system uptime monitoring.
+- Added PASS/WARNING/FAIL status thresholds for system resources.
+- Added an overall system diagnostic result based on individual test results.
+- Added potential issue reporting when system resources exceed warning thresholds.
+- Added improved issue tracking to prevent contradictory diagnostic messages.
+- Added one-second CPU usage sampling for more accurate CPU measurements.
+
+### Current System Diagnostic
+
+The system diagnostic currently checks:
+
+1. Operating system
+2. OS version
+3. Machine type
+4. Hostname
+5. Python version
+6. CPU usage
+7. Memory usage
+8. Disk usage
+9. Available disk space
+10. System uptime
+
+The diagnostic then assigns PASS, WARNING, or FAIL results based on predefined thresholds and provides potential troubleshooting recommendations when issues are detected.
 
 ### Network Diagnostic Improvements
 

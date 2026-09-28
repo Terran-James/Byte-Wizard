@@ -13,6 +13,23 @@ import subprocess
 # Used to get check HTTPS connectivity
 import urllib.request
 
+# Used to gather system information
+import psutil
+
+# Used to get date/time information
+import datetime
+
+
+# ==============================
+# Uptime Information
+# ==============================
+def get_uptime():
+    boot_time = psutil.boot_time()
+    current_time = datetime.datetime.now().timestamp()
+    uptime_seconds = current_time - boot_time
+    return datetime.timedelta(seconds=int(uptime_seconds))
+
+
 # ==============================
 # Default Gateway Information
 # ==============================
@@ -62,17 +79,19 @@ def get_default_gateway():
 
     return None
 
+
 # ==============================
-# User Network Information
+# User Network Information/Diagnostic
 # ==============================
 
 def network_diagnostic():
-    text = "Network Information"
-    ascii_networkInfo = pyfiglet.figlet_format(text)
-
-    print(ascii_networkInfo)
-    print("\nNetwork Information:\n")
-    print("Running diagnostic....\n")
+    # Prints out a summary of the network tests ran
+    print(
+            "========================================"
+                        "NETWORK SUMMARY"
+            "========================================"
+            )
+    
 
     hostname = socket.gethostname()
     try:
@@ -80,7 +99,7 @@ def network_diagnostic():
     except socket.gaierror:
         ip_address = "Unavailable"
 
-    print("Hostname: " + hostname)
+    print("\nHostname: " + hostname)
     print("IP Address: " + ip_address + "\n")
 
     try:
@@ -117,30 +136,28 @@ def network_diagnostic():
         print("HTTPS Connection: Not Working")
 
 
-# Prints out a summary of the tests ran
-    text = "Summary"
-    ascii_summary = pyfiglet.figlet_format(text)
-    print(ascii_summary)
+# Runs a diagnostic
+    print("\nRunning diagnostic....\n")
 
     if internet_status:
-        internet_result = "PASS"
+        internet_result = "[PASS]"
     else:
-        internet_result = "FAIL"
+        internet_result = "[FAIL]"
 
     if dns_status:
-        dns_result = "PASS"
+        dns_result = "[PASS]"
     else:
-        dns_result = "FAIL"
+        dns_result = "[FAIL]"
 
     if gateway_status:
-        gateway_result = "PASS"
+        gateway_result = "[PASS]"
     else:
-        gateway_result = "FAIL"
+        gateway_result = "[FAIL]"
 
     if https_status:
-        https_result = "PASS"
+        https_result = "[PASS]"
     else:
-        https_result = "FAIL"
+        https_result = "[FAIL]"
 
     print(f"{'Internet Connection':<25} {internet_result}")
     print(f"{'DNS Resolution':<25} {dns_result}")
@@ -148,46 +165,147 @@ def network_diagnostic():
     print(f"{'HTTPS Connectivity':<25} {https_result}")
 
 # Tells the user of potential issues if anything has failed
-    print("Potential Issue(s)\n")
-    if internet_result == "FAIL":
+    print("\nPotential Issue(s)\n")
+    if internet_result == "[FAIL]":
         print("An Internet connection could not be established. Check your network connection, router, or Internet Service Provider.")
-    if dns_result == "FAIL":
+    if dns_result == "[FAIL]":
         print("DNS resolution appears to be failing. Your computer may be unable to translate domain names into IP addresses.")
-    if gateway_result == "FAIL":
+    if gateway_result == "[FAIL]":
         print("Your default gateway could not be detected. Your computer may be having trouble communicating with the local network or router.")
-    if https_result == "FAIL":
+    if https_result == "[FAIL]":
         print("HTTPS connectivity failed. Your computer may be experiencing a problem connecting to a secure website.")
     if (
-        internet_result == "PASS"
-        and dns_result == "PASS"
-        and gateway_result == "PASS"
-        and https_result == "PASS"
+        internet_result == "[PASS]"
+        and dns_result == "[PASS]"
+        and gateway_result == "[PASS]"
+        and https_result == "[PASS]"
     ):
         print("No network issues were detected.")
         
 
 # ==============================
-# User System Information
+# User System Information/Diagnostic
 # ==============================
 
-def system_info():
-    text = "System Information"
-    ascii_systemInfo = pyfiglet.figlet_format(text)
-
-    print(ascii_systemInfo)
-    print("Running diagnostic....\n")
-    print("\033[1mSummary\033[0m\n")
+def system_diagnostic():
+    # Prints out a summary of the system tests ran
+    print(
+    "========================================"
+                "SYSTEM SUMMARY"
+    "========================================"
+    )
 
     if platform.system() == "Darwin":
         operating_system = "macOS"
     else:
         operating_system = platform.system()
 
-    print(f"Operating System:   {operating_system}")
+    print(f"\nOperating System:   {operating_system}")
     print(f"OS Version:   {platform.release()}")
     print(f"Machine Type:   {platform.machine()}")
     print(f"Hostname:   {platform.node()}")
-    print(f"Python Version:  {platform.python_version()}")
+    print(f"Python Version:  {platform.python_version()}\n")
+
+    cpu_usage = psutil.cpu_percent(interval=1)
+    print(f"CPU Usage:  {cpu_usage}%")
+
+    if cpu_usage < 70:
+        cpu_result = "[PASS]"
+    elif cpu_usage <= 90:
+        cpu_result = "[WARNING]"
+    else:
+        cpu_result = "[FAIL]"
+
+
+    print(f"Memory Usage:  {psutil.virtual_memory().percent}%")
+
+    if psutil.virtual_memory().percent < 80:
+        memory_result = "[PASS]"
+    elif psutil.virtual_memory().percent <= 90:
+        memory_result = "[WARNING]"
+    else:
+        memory_result = "[FAIL]"
+
+
+    disk_usage = psutil.disk_usage("/")
+    disk_free = disk_usage.free / (1024 ** 3)
+    disk_percent = disk_usage.percent
+    print(f"Storage Usage:   {disk_percent}% used")
+
+    if disk_percent < 80:
+        disk_result = "[PASS]"
+    elif disk_percent <= 90:
+        disk_result = "[WARNING]"
+    else:
+        disk_result = "[FAIL]"
+
+    print(f"Disk Free:  {disk_free:.2f} GB\n")
+    
+
+    uptime = get_uptime()
+    print(f"System Uptime:  {uptime}")
+
+    if uptime < datetime.timedelta(days=14):
+        uptime_result = "[PASS]"
+    elif uptime <= datetime.timedelta(days=30):
+        uptime_result = "[WARNING]"
+    else:
+        uptime_result = "[FAIL]"
+
+
+    if all(result == "[PASS]" for result in (
+        cpu_result,
+        memory_result,
+        disk_result,
+        uptime_result
+    )):
+        overall_result = "[PASS]"
+
+    elif any(result == "[WARNING]" for result in (
+        cpu_result,
+        memory_result,
+        disk_result,
+        uptime_result
+    )):
+        overall_result = "[WARNING]"
+
+    else:
+        overall_result = "[FAIL]"
+    
+    # Runs a diagnostic
+    print("\nRunning diagnostic....\n")
+
+    print(f"{'CPU Usage':<25} {cpu_result}")
+    print(f"{'Memory Results':<25} {memory_result}")
+    print(f"{'Disk Results':<25} {disk_result}")
+    print(f"{'Current Uptime':<25} {uptime_result}\n")
+
+# Tells the user of potential issues if anything has failed
+    print("Reason:")
+
+    issues_found = False
+
+    if cpu_result in ("[FAIL]", "[WARNING]"):
+        print("CPU usage is high, consider closing some applications.")
+        issues_found = True
+
+    if memory_result in ("[FAIL]", "[WARNING]"):
+        print("Your memory usage is high, consider upgrading memory if high usage persists.")
+        issues_found = True
+
+    if disk_result in ("[FAIL]", "[WARNING]"):
+        print("Your disks are getting full, consider deleting some old files or applications.")
+        issues_found = True
+
+    if uptime_result in ("[FAIL]", "[WARNING]"):
+        print("Current uptime is high, consider restarting your PC.")
+        issues_found = True
+
+    if not issues_found:
+        print("No system issues were detected.")
+
+    print(f"{'Overall Diagnostic:':<25} {overall_result}")
+
 
 # ==============================
 # User Class
@@ -214,13 +332,13 @@ class User:
 # ==============================
 
 def main_menu():
-    print("1. Slow computer")
-    print("2. No internet")
-    print("3. No sound")
-    print("4. Computer won't turn on")
-    print("5. Other issues")
-    print("6. System information")
-    print("7. Network information")
+    print("1. Slow Computer")
+    print("2. No Internet")
+    print("3. No Sound")
+    print("4. Computer Won't Turn On")
+    print("5. System Diagnostic")
+    print("6. Network Diagnostic")
+    print("7. Other Issue")
 
 
 # ==============================
@@ -269,7 +387,11 @@ def change_email(user):
 
 def slow_computer(user):
     while True:
-        print("\nYou selected: Slow computer\n")
+        print(
+            "========================================"
+                        "SLOW COMPUTER"
+            "========================================"
+            )
         print("Is your computer slow all the time?")
         print("1. Yes")
         print("2. No")
@@ -304,7 +426,11 @@ def slow_computer(user):
 
 def no_internet(user):
     while True:
-        print("\nYou selected: No internet\n")
+        print(
+                "========================================"
+                            "NO INTERNET"
+                "========================================"
+                )
         print("Are you on a wired or wireless connection?")
         print("1. Wired")
         print("2. Wireless")
@@ -338,7 +464,11 @@ def no_internet(user):
 
 
 def no_sound(user):
-    print("\nYou selected: No sound\n")
+    print(
+            "========================================"
+                            "NO SOUND"
+            "========================================"
+            )
     print("Please follow these steps to troubleshoot your sound issues:\n")
     print("1. Check if your speakers or headphones are properly connected.")
     print("2. Verify that the volume is not muted or too low.")
@@ -347,7 +477,11 @@ def no_sound(user):
 
 
 def computer_wont_turn_on(user):
-    print("\nYou selected: Computer won't turn on\n")
+    print(
+            "========================================"
+                    "COMPUTER WONT TURN ON"
+            "========================================"
+            )
     print(
         "Alright " + user.name +
         ", please follow these steps to troubleshoot your computer:\n"
@@ -359,7 +493,11 @@ def computer_wont_turn_on(user):
 
 
 def other_issues(user):
-    print("\nYou selected: Other issues\n")
+    print(
+            "========================================"
+                        "OTHER ISSUES"
+            "========================================"
+            )
     print("Please describe the issue you are experiencing:\n")
 
     detailed_issue = input()
@@ -418,13 +556,13 @@ def user_troubleshooting():
             computer_wont_turn_on(user)
 
         elif option == 5:
-            other_issues(user)
+            system_diagnostic()
 
         elif option == 6:
-            system_info()
+            network_diagnostic()
 
         elif option == 7:
-            network_diagnostic()
+            other_issues(user)
 
         else:
             print("Invalid option selected.")
@@ -451,7 +589,7 @@ text = "Byte Wizard"
 ascii_title = pyfiglet.figlet_format(text)
 
 print(ascii_title)
-print("Welcome to the Byte Wizard!\n")
+print("Welcome to the Byte Wizard!")
 print("This tool will help you troubleshoot your computer.\n")
 
 
