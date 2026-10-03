@@ -22,6 +22,9 @@ import datetime
 # Used to wait
 import time
 
+# Checks if a command exists on the system
+import shutil
+
 
 # ==============================
 # Gets User's Operating System
@@ -35,6 +38,15 @@ def get_operating_system():
         return "macOS"
 
     return operating_system
+
+
+def check_threshold(value, warning, failure):
+    """Return a consistent status for a metric with warning/failure limits."""
+    if value < warning:
+        return "[PASS]"
+    if value <= failure:
+        return "[WARNING]"
+    return "[FAIL]"
 
 
 # ==============================
@@ -269,11 +281,99 @@ def network_diagnostic():
 
 
 # ==============================
+# Security Status
+# ==============================
+
+def security_status(display=True):
+    """Check the operating system's firewall status and report it to the user."""
+
+    operating_system = platform.system()
+
+    if display:
+        print("\n========================================\nSECURITY STATUS\n========================================")
+    enabled = None
+
+    if operating_system == "Darwin":
+        # Check macOS firewall
+        result = subprocess.run(
+            ["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"],
+            capture_output=True,
+            text=True
+        )
+        if "enabled" in result.stdout.lower():
+            enabled = True
+        elif "disabled" in result.stdout.lower():
+            enabled = False
+
+    elif operating_system == "Windows":
+        # Check Windows firewall
+        result = subprocess.run(
+            ['powershell', '-Command','Get-NetFirewallProfile | Select-Object Name, Enabled'],
+            capture_output=True,
+            text=True
+        )
+        values = [line.strip().lower() for line in result.stdout.splitlines() if line.strip().lower() in ("true", "false")]
+        if values:
+            enabled = all(value == "true" for value in values)
+
+    elif operating_system == "Linux":
+        # First check if the command exitst of the system / if command is found, check firewall status
+        if shutil.which("ufw"):
+                result = subprocess.run(
+                    ['ufw', 'status'],
+                    capture_output=True,
+                    text=True
+                )
+                if "inactive" in result.stdout.lower():
+                    enabled = False
+                elif "active" in result.stdout.lower():
+                    enabled = True
+
+        elif shutil.which("firewall-cmd"):
+                result = subprocess.run(
+                    ['firewall-cmd', '--state'],
+                    capture_output=True,
+                    text=True
+                )
+                if "not running" in result.stdout.lower():
+                    enabled = False
+                elif "running" in result.stdout.lower():
+                    enabled = True
+
+        elif shutil.which("iptables"):
+                result = subprocess.run(
+                    ['iptables', '-L', '-n'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    output = result.stdout.lower()
+
+                    if "policy drop" in output or "policy reject" in output:
+                        enabled = True
+                    elif "policy accept" in output:
+                        enabled = False
+                else:
+                        print("\nUnable to check iptables rules.")
+        else:
+            if display:
+                print("\nNo firewall management command found on this Linux system.")
+            return None
+
+    if display:
+        if enabled is None:
+            print("\nFirewall status could not be determined.")
+        else:
+            print(f"\nFirewall: {'ENABLED ✓' if enabled else 'DISABLED ✗'}")
+    return enabled
+
+
+# ==============================
 # Quick System & Network Scan
 # ==============================
 
-def qucik_scan():
-    """Run a quck system and network health check that returns results as a .txt file"""
+def quick_scan():
+    """Run a quick system, network, and firewall health check."""
     print("\n========================================\nBYTE WIZARD SCAN\n========================================")
 
 
@@ -282,31 +382,15 @@ def qucik_scan():
 
     print("\nSYSTEM\n")
 
-    # CPU
-    if system["CPU Usage"] < 70:
-        cpu_result = "[PASS]"
-    elif system["CPU Usage"] <= 90:
-        cpu_result = "[FAIL]"
+    cpu_result = check_threshold(system["CPU Usage"], 70, 90)
 
     print(f"{'CPU Usage':<25} {system['CPU Usage']:>6.5f}%     {cpu_result}")
 
-    # Memory
-    if system["Memory Usage"] < 80:
-        memory_result = "[PASS]"
-    elif system["Memory Usage"] <= 90:
-        memory_result = "[WARNING]"
-    else:
-        memory_result = "[FAIL]"
+    memory_result = check_threshold(system["Memory Usage"], 80, 90)
 
     print(f"{'Memory Usage':<25} {system['Memory Usage']:>6.4f}%     {memory_result}")
 
-    # Disk
-    if system['Disk Usage'] < 80:
-        disk_result = "[PASS]"
-    elif system['Disk Usage'] <= 90:
-        disk_result = "[WARNING]"
-    else:
-        disk_result = "[FAIL]"
+    disk_result = check_threshold(system["Disk Usage"], 80, 90)
 
     print(f"{'Storage Usage':<25} {system['Disk Usage']:>6.4f}%     {disk_result}")
 
@@ -328,15 +412,17 @@ def qucik_scan():
     https_result = "[PASS]" if network["https"] else "[FAIL]"
     print(f"{'HTTPS Connectivity':<25} {('Working' if network['https'] else 'Not Working'):<12} {https_result}")
 
-    # Overall results
+    print("\nSECURITY\n")
+    firewall = security_status(display=False)
+    firewall_result = "[UNKNOWN]" if firewall is None else ("[PASS]" if firewall else "[FAIL]")
+    firewall_text = "Unknown" if firewall is None else ("Enabled" if firewall else "Disabled")
+    print(f"{'Firewall Status':<25} {firewall_text:<12} {firewall_result}")
+
+    # Unknown firewall status is reported but does not count as a failure.
     all_results = (
-        cpu_result,
-        memory_result,
-        disk_result,
-        internet_result,
-        dns_result,
-        gateway_result,
-        https_result
+        cpu_result, memory_result, disk_result, internet_result,
+        dns_result, gateway_result, https_result,
+        *(() if firewall is None else (firewall_result,)),
     )
 
     if "[FAIL]" in all_results:
@@ -351,51 +437,50 @@ def qucik_scan():
     print("========================================")
 
     if ask_yes_no("\nWould you like to save this scan as a .txt report?"):
-        save_quick_scan_report(system, network)
+        save_quick_scan_report(system, network, {
+            "CPU Result": cpu_result, "Memory Result": memory_result,
+            "Disk Result": disk_result, "Internet Result": internet_result,
+            "DNS Result": dns_result, "Gateway Result": gateway_result,
+            "HTTPS Result": https_result, "Firewall Result": firewall_result,
+            "Overall Result": overall_result,
+        }, firewall_text)
 
 
 # ==============================
 # Quick System & Network Scan Save
 # ==============================
 
-def save_quick_scan_report(system, network):
-    """Save Quick Scan results to a text file."""
-
-    # Saves the report to system using a timestamp
+def save_quick_scan_report(system, network, statuses, firewall_text="Unknown"):
+    """Save the same timestamped Quick Scan summary shown on screen."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    report_name = "byte_wizard_quick_scan_{timestap}.txt"
-
-    with open(report_name, "w") as report:
+    report_name = f"byte_wizard_quick_scan_{timestamp}.txt"
+    checks = (
+        ("CPU Usage", f"{system['CPU Usage']:.1f}%", statuses["CPU Result"]),
+        ("Memory Usage", f"{system['Memory Usage']:.1f}%", statuses["Memory Result"]),
+        ("Storage Usage", f"{system['Disk Usage']:.1f}%", statuses["Disk Result"]),
+        ("Internet", "Connected" if network["internet"] else "Not Connected", statuses["Internet Result"]),
+        ("DNS", "Working" if network["dns"] else "Not Working", statuses["DNS Result"]),
+        ("Gateway", "Found" if network["gateway_status"] else "Not Found", statuses["Gateway Result"]),
+        ("HTTPS", "Working" if network["https"] else "Not Working", statuses["HTTPS Result"]),
+        ("Firewall", firewall_text, statuses["Firewall Result"]),
+    )
+    with open(report_name, "w", encoding="utf-8") as report:
         report.write("========================================\n")
         report.write("           BYTE WIZARD SCAN\n")
-        report.write("========================================\n\n")
-
-        report.write("SYSTEM\n")
-        report.write("----------------------------------------\n")
-        report.write(f"CPU Usage:      {system['CPU Usage']:.1f}%\n")
-        report.write(f"Memory Usage:   {system['Memory Usage']:.1f}%\n")
-        report.write(f"Storage Usage:  {system['Disk Usage']:.1f}%\n\n")
-
-        report.write("NETWORK\n")
-        report.write("----------------------------------------\n")
-        report.write(
-            f"Internet:       "
-            f"{'Connected' if network['internet'] else 'Not Connected'}\n"
-        )
-        report.write(
-            f"DNS:            "
-            f"{'Working' if network['dns'] else 'Not Working'}\n"
-        )
-        report.write(
-            f"Gateway:        "
-            f"{'Found' if network['gateway_status'] else 'Not Found'}\n"
-        )
-        report.write(
-            f"HTTPS:          "
-            f"{'Working' if network['https'] else 'Not Working'}\n"
-        )
-
+        report.write("========================================\n")
+        report.write(f"Date/Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        report.write(f"Hostname: {platform.node()}\n")
+        report.write(f"Operating System: {get_operating_system()}\n\n")
+        for section, section_checks in (("SYSTEM", checks[:3]), ("NETWORK", checks[3:7]), ("SECURITY", checks[7:])):
+            report.write(f"{section}\n----------------------------------------\n")
+            for label, value, status in section_checks:
+                report.write(f"{label:<20} {value:<16} {status}\n")
+            report.write("\n")
+        report.write("========================================\n")
+        report.write(f"OVERALL STATUS: {statuses['Overall Result']}\n")
+        report.write("========================================\n")
     print(f"\nReport saved as: {report_name}")
+
 
         
 # ==============================
@@ -419,32 +504,16 @@ def system_diagnostic():
     print(f"{'CPU Usage:':<25}  {results['CPU Usage']}%")
 
     # Lower usage is healthy; higher ranges produce a warning or failure.
-    if results['CPU Usage'] < 70:
-        cpu_result = "[PASS]"
-    elif results['CPU Usage'] <= 90:
-        cpu_result = "[WARNING]"
-    else:
-        cpu_result = "[FAIL]"
+    cpu_result = check_threshold(results["CPU Usage"], 70, 90)
 
 
-    print(f"{'Memory Usage:':<25}  {psutil.virtual_memory().percent}%")
-
-    if psutil.virtual_memory().percent < 80:
-        memory_result = "[PASS]"
-    elif psutil.virtual_memory().percent <= 90:
-        memory_result = "[WARNING]"
-    else:
-        memory_result = "[FAIL]"
+    print(f"{'Memory Usage:':<25}  {results['Memory Usage']}%")
+    memory_result = check_threshold(results["Memory Usage"], 80, 90)
 
 
     print(f"{'Storage Usage:':<25}   {results['Disk Usage']}% used")
 
-    if results['Disk Usage'] < 80:
-        disk_result = "[PASS]"
-    elif results['Disk Usage'] <= 90:
-        disk_result = "[WARNING]"
-    else:
-        disk_result = "[FAIL]"
+    disk_result = check_threshold(results["Disk Usage"], 80, 90)
 
     print(f"{'Disk Free:':<25}  {results['Disk Free']:.2f} GB\n")
     
@@ -522,20 +591,9 @@ def system_diagnostic():
 # ==============================
 
 class User:
-    """Store the user's name and email, with a masked email for display."""
-    def __init__(self, name, email):
+    """Store the user's name."""
+    def __init__(self, name):
         self.name = name
-        self._email = email
-
-    # Returns a masked version of the email address
-    def get_email(self):
-        if self._email == "Not provided":
-            return self._email
-        return self._email[0] + "****" + self._email[self._email.index("@"):]
-
-    # Returns the actual email for internal comparison
-    def get_actual_email(self):
-        return self._email
 
 
 # ==============================
@@ -546,66 +604,71 @@ def main_menu():
     """Print the numbered choices handled by user_troubleshooting()."""
     print("\n========================================\nMAIN MENU\n========================================")
 
-    print("\nTROUBLESHOOTING")
-    print("1. Slow Computer")
+    print("\n1. Troubleshoot a Problem")
+    print("2. System Options")
+    print("3. Network Options")
+    print("4. Security Status")
+    print("5. System Health")
+   
+    print("\n6. Exit")
+
+
+# ==============================
+# Troubleshooting Menu
+# ==============================
+
+def troubleshoot_menu():
+    """Print the numbered choices for troubleshooting."""
+    print("\n========================================\nTROUBLESHOOTING\n========================================")
+
+    print("\n1. Slow Computer")
     print("2. No Internet")
     print("3. No Sound")
     print("4. Computer Won't Turn On")
     print("5. Other Issue")
-
-    print("\nDIAGNOSTICS")
-    print("6. Run System Diagnostic")
-    print("7. Run Network Diagnostic")
-    print("8. Run Quick Scan")
-
-    print("\nSYSTEM INFORMATION")
-    print("9. View System Information")
-    print("10. View Network Information")
-    print("11. View Running Processes")
-   
-    print("\n12. Exit")
+    print("\n6. Return to Main Menu")
 
 
 # ==============================
-# Email Functions
+# System Menu
 # ==============================
 
-def change_email(user):
-    """Ask for and confirm a new email before saving it to the user."""
-    while True:
-        new_email = input("Please enter your new email address: ")
+def system_menu():
+    """Print the numbered choices for system diagnostics."""
+    print("\n========================================\nSYSTEM\n========================================")
 
-        if new_email == user.get_actual_email():
-            print(
-                "The new email address cannot be the same as "
-                "the current email address. Please try again.\n"
-            )
-            continue
+    print("\n1. View System Information")
+    print("2. Run System Diagnostic")
+    
+    print("\n3. Return to Main Menu")
 
-        if "@" not in new_email or "." not in new_email:
-            print("Invalid email format. Please try again.\n")
-            continue
 
-        confirm_new_email = input(
-            "Please re-enter your new email address for confirmation: "
-        )
+# ==============================
+# Network Menu
+# ==============================
 
-        if new_email == confirm_new_email:
-            user._email = new_email
+def network_menu():
+    """Print the numbered choices for network diagnostics."""
+    print("\n========================================\nNETWORK\n========================================")
 
-            print(
-                "Thank you " + user.name +
-                ", your email address has been updated to: " +
-                user.get_email() + "\n"
-            )
-            break
+    print("\n1. View Network Information")
+    print("2. Run Network Diagnostic")
+    
+    print("\n3. Return to Main Menu")
 
-        else:
-            print(
-                "The email addresses do not match. "
-                "Please try again.\n"
-            )
 
+# ==============================
+# System Health Menu
+# ==============================
+
+def system_health_menu():
+    """Print the numbered choices for system health checks."""
+    print("\n========================================\nSYSTEM HEALTH\n========================================")
+
+    print("\n1. Quick Scan")
+    print("2. View Running Processes")
+    
+    print("\n3. Return to Main Menu")
 
 # ==============================
 # Troubleshooting Functions
@@ -803,7 +866,7 @@ def computer_wont_turn_on(user):
 
 
 def other_issues(user):
-    """Let the user summarize another issue and optionally update their email."""
+    """Let the user summarize another issue and keep a record for technician review."""
     print("\n========================================\nOTHER ISSUE\n========================================")
     print("Describe the problem in a sentence or two. Avoid including passwords or other private information.\n")
     detailed_issue = input("> ").strip()
@@ -813,15 +876,6 @@ def other_issues(user):
 
     print(f"\nThanks, {user.name}. Your issue summary is:\n\"{detailed_issue}\"\n")
     print("Byte Wizard does not send or save support requests, so keep this summary to share with a technician if needed.")
-    print(f"Contact email on file: {user.get_email()}")
-
-    if ask_yes_no("Would you like to update your contact email?"):
-        print(
-            "\nHm... no worries, even a wizard misplaces his owl sometimes. "
-            "Let's update that for you " + user.name + ".\n"
-        )
-
-        change_email(user)
 
 
 # ==============================
@@ -871,7 +925,8 @@ def view_network_information():
 # ==============================
 
 def view_running_processes():
-
+    """Display the top 10 running processes by CPU usage."""
+    
     # Displays running processes on the user's system
     print("\n========================================")
     print("           RUNNING PROCESSES")
@@ -935,50 +990,102 @@ def user_troubleshooting(user):
 
         main_menu()
 
-        choice = input("\nEnter a number (1-12): ").strip()
-        if not choice.isdigit() or int(choice) not in range(1, 13):
-            print("Invalid choice. Please enter a number from 1 to 12.")
+        choice = input("\nEnter a number (1-6): ").strip()
+        if not choice.isdigit() or int(choice) not in range(1, 7):
+            print("Invalid choice. Please enter a number from 1 to 6.")
             continue
         option = int(choice)
 
         # Exit before dispatching a feature; all other numbers map to a menu item.
-        if option == 12:
+        if option == 6:
             print(f"\nThank you {user.name} for choosing Byte Wizard. Goodbye!")
             print(ascii_title)
             break
 
         if option == 1:
-            slow_computer(user)
+            troubleshoot_menu()
+            print("\nPlease select a troubleshooting option (1-6):")
+            sub_choice = input().strip()
+
+            if not sub_choice.isdigit() or int(sub_choice) not in range(1, 7):
+                print("Invalid choice. Please enter a number from 1 to 6.")
+                continue
+
+            sub_option = int(sub_choice)
+
+            if sub_option == 6:
+                continue
+            
+            elif sub_option == 1:
+                slow_computer(user)
+            elif sub_option == 2:
+                no_internet(user)
+            elif sub_option == 3: 
+                no_sound(user)
+            elif sub_option == 4:
+                computer_wont_turn_on(user)
+            elif sub_option == 5:
+                other_issues(user)
+            
 
         elif option == 2:
-            no_internet(user)
+            system_menu()
+            print("\nPlease select a system option (1-3):")
+            sub_choice = input().strip()
+
+            if not sub_choice.isdigit() or int(sub_choice) not in range(1, 4):
+                print("Invalid choice. Please enter a number from 1 to 3.")
+                continue
+
+            sub_option = int(sub_choice)
+
+            if sub_option == 3:
+                continue
+            if sub_option == 1:
+                view_system_information()
+            elif sub_option == 2:
+                system_diagnostic()
+        
 
         elif option == 3:
-            no_sound(user)
+            network_menu()
+            print("\nPlease select a network option (1-3):")
+            sub_choice = input().strip()
 
+            if not sub_choice.isdigit() or int(sub_choice) not in range(1, 4):
+                print("Invalid choice. Please enter a number from 1 to 3.")
+                continue
+
+            sub_option = int(sub_choice)
+            
+            if sub_option == 3:
+                continue            
+            if sub_option == 1:
+                view_network_information()
+            elif sub_option == 2:
+                network_diagnostic()
+            
         elif option == 4:
-            computer_wont_turn_on(user)
+            security_status()
 
         elif option == 5:
-            other_issues(user)
+            system_health_menu()
+            print("\nPlease select a system health option (1-3):")
+            sub_choice = input().strip()
 
-        elif option == 6:
-            system_diagnostic()
+            if not sub_choice.isdigit() or int(sub_choice) not in range(1, 4):
+                print("Invalid choice. Please enter a number from 1 to 3.")
+                continue
 
-        elif option == 7:
-            network_diagnostic()
+            sub_option = int(sub_choice)
 
-        elif option == 8:
-            qucik_scan()
-
-        elif option == 9:
-            view_system_information()
-
-        elif option == 10:
-            view_network_information()
-
-        elif option == 11:
-            view_running_processes()
+            if sub_option == 3:
+                continue
+            
+            if sub_option == 1:
+                quick_scan()
+            elif sub_option == 2:
+                view_running_processes()
 
         else:
             print("Invalid option selected.")
@@ -1019,37 +1126,5 @@ while True:
         break
 
 
-# Email is optional; when supplied, ask twice to catch typing mistakes.
-email_choice = ask_yes_no("\nWould you like to provide your email address for your own reference?")
-if email_choice:
-    while True:
-        email_address = input(
-            "\nEnter your email address for further assistance: "
-        )
-
-        email_address = email_address.strip()
-        if "@" not in email_address or "." not in email_address.split("@")[-1] or " " in email_address:
-            print("Invalid email format. Please try again.\n")
-            continue
-
-        confirm_email_address = input(
-        "\nPlease re-enter your email address for confirmation: "
-     )
-
-        if email_address == confirm_email_address:
-            break
-
-        else:
-
-            print("The email addresses do not match. Please try again.\n")
-
-else:
-    email_address = "Not provided"
-
-
-
-# Create the user record consumed by the troubleshooting features.
-user = User(user_name, email_address)
-
 # Enter the menu loop after setup is complete.
-user_troubleshooting(user)
+user_troubleshooting(user=User(name=user_name))
