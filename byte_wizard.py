@@ -25,6 +25,9 @@ import time
 # Checks if a command exists on the system
 import shutil
 
+# Used to handle exceptions for urllib.request.urlopen
+import urllib.error
+
 
 # ==============================
 # Gets User's Operating System
@@ -183,7 +186,12 @@ def get_network_information():
 
     if not ip_address:
         try:
-            ip_address = socket.gethostbyname(hostname)
+            local_ip = socket.gethostbyname(hostname)
+
+            # Avoids reporting a loopback address as the LAN IP
+            if not local_ip.startswith("127."):
+                ip_address = local_ip
+
         except socket.gaierror:
             ip_address = None
 
@@ -204,9 +212,10 @@ def get_network_information():
     # Request a secure web page to check end-to-end HTTPS access.
     try:
         with urllib.request.urlopen("https://google.com", timeout=5):
-            https_status = True
-    except Exception:
-        https_status = False
+            https_connected = True
+            
+    except (urllib.error.URLError, TimeoutError, OSError):
+        https_connected = False
 
     interface_up = bool(interface and interface_stats.get(interface)
                         and interface_stats[interface].isup)
@@ -219,8 +228,8 @@ def get_network_information():
         "subnet_mask": subnet_mask,
         "dns": dns_status,
         "dns_working": dns_status,
-        "https": https_status,
-        "https_working": https_status,
+        "https": https_connected,
+        "https_working": https_connected,
         "internet": internet_status,
         "status": "Connected" if interface_up and gateway_status and internet_status else "Disconnected",
         "interface": interface,
