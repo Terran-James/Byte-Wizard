@@ -1,1 +1,3 @@
 pyfiglet
+PySide6
+PyQTGraph
