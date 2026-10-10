@@ -991,6 +991,10 @@ def view_running_processes():
 
 def user_troubleshooting(user):
     """Read menu choices, run the selected feature, and offer another turn."""
+
+    text = "Byte Wizard"
+    ascii_title = pyfiglet.figlet_format(text)
+    
     while True:
         print(
             "\nThank you " + user.name +
@@ -1113,27 +1117,31 @@ def user_troubleshooting(user):
 # Program Start
 # ==============================
 
-text = "Byte Wizard"
-ascii_title = pyfiglet.figlet_format(text)
+def main():
+    """Start the terminal version of Byte Wizard."""
+    text = "Byte Wizard"
+    ascii_title = pyfiglet.figlet_format(text)
 
-print(ascii_title)
-print("Welcome to the Byte Wizard!")
-print("This tool will help you troubleshoot your computer.\n")
+    print(ascii_title)
+    print("Welcome to the Byte Wizard!")
+    print("This tool will help you troubleshoot your computer.\n")
+
+    # Ask for a valid name before creating the user record.
+    while True:
+        user_name = input("Please enter your name:\n")
+
+        if user_name.strip() == "":
+            print("Please enter your name.\n")
+
+        elif not user_name.replace(" ", "").isalpha():
+            print("Please enter a valid name.\n")
+
+        else:
+            break
+
+    # Enter the menu loop after setup is complete.
+    user_troubleshooting(user=User(name=user_name))
 
 
-# Ask for a name containing letters and spaces before creating the user record.
-while True:
-    user_name = input("Please enter your name:\n")
-
-    if user_name.strip() == "":
-        print("Please enter your name.\n")
-
-    elif not user_name.replace(" ", "").isalpha():
-        print("Please enter a valid name.\n")
-
-    else:
-        break
-
-
-# Enter the menu loop after setup is complete.
-user_troubleshooting(user=User(name=user_name))
+if __name__ == "__main__":
+    main()
