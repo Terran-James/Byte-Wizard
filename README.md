@@ -1,5 +1,6 @@
 # Byte Wizard
 
+<<<<<<< Updated upstream
 Byte Wizard is a Python-based command-line IT troubleshooting tool that helps users troubleshoot common computer problems and perform system, network, and security checks.
 
 ## Features
@@ -64,9 +65,48 @@ Python • psutil • PyFiglet • Socket • Subprocess • Platform • PyInst
 - Improved reports
 - Additional cross-platform features
 - Potential GUI version
+=======
+Byte Wizard is a Python-based IT troubleshooting and system diagnostics tool designed to monitor system health, troubleshoot network issues, and perform basic security checks.
+
+## Features
+
+- System monitoring and diagnostics
+- Network connectivity troubleshooting
+- Firewall and disk encryption checks
+- Operating system update checks
+- Quick system and security scans
+- Running process monitoring
+- Diagnostic report generation
+- Support for macOS, Windows, and Linux
+
+## Installation
+
+Clone the repository from GitHub and navigate to the project folder.
+
+Install the required dependencies using `pip install -r requirements.txt`.
+
+Run the application using `python3 byte_wizard.py`.
+
+## Technologies
+
+- Python
+- psutil
+- PyFiglet
+- Git and GitHub
+
+## Future Plans
+
+- Develop a graphical interface using PySide6
+- Add live system monitoring and data visualizations
+- Improve diagnostic features and cross-platform compatibility
+>>>>>>> Stashed changes
 
 ## Author
 
 **Terran-James**
 
+<<<<<<< Updated upstream
 Built as part of my ongoing IT and cybersecurity development.
+=======
+Built to develop practical skills in Python programming, IT troubleshooting, and cybersecurity.
+>>>>>>> Stashed changes

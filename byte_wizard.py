@@ -3,9 +3,11 @@ import pyfiglet
 
 # Used to get Platform information for the user's computer
 import platform
+import os
 
 # Used to get Network information for the user's computer
 import socket
+import ipaddress
 
 # Used on MacOS to get route process for defauly gateway
 import subprocess
@@ -18,6 +20,7 @@ import psutil
 
 # Used to get date/time information
 import datetime
+import json
 
 # Used to wait
 import time
@@ -27,6 +30,7 @@ import shutil
 
 # Used to handle exceptions for urllib.request.urlopen
 import urllib.error
+import re
 
 
 # ==============================
@@ -47,7 +51,7 @@ def check_threshold(value, warning, failure):
     """Return a consistent status for a metric with warning/failure limits."""
     if value < warning:
         return "[PASS]"
-    if value <= failure:
+    if value < failure:
         return "[WARNING]"
     return "[FAIL]"
 
@@ -60,16 +64,21 @@ def get_system_information():
     """Collect resource usage and capacity values for diagnostics and display."""
     # psutil reports CPU use over a one-second sample and memory/disk as bytes.
     cpu_usage = psutil.cpu_percent(interval=1)
-    
+
     memory = psutil.virtual_memory()
     memory_usage = memory.percent
     memory_total = memory.total / (1024 ** 3)
 
-    disk_usage = psutil.disk_usage("/")
+    disk_path = (
+        os.environ.get("SystemDrive", os.path.abspath(os.sep))
+        if platform.system() == "Windows"
+        else "/"
+    )
+    disk_usage = psutil.disk_usage(disk_path)
     disk_percent = disk_usage.percent
     disk_free = disk_usage.free / (1024 ** 3)
     disk_total = disk_usage.total / (1024 ** 3)
-    
+
     # Keep the values together so diagnostics and the information screen can reuse them.
     return {
         "CPU Usage": cpu_usage,
@@ -101,47 +110,122 @@ def get_default_gateway():
     """Read the default route using the command available on this OS."""
     operating_system = platform.system()
 
-    # macOS reports the gateway in the output of `route`.
-    if operating_system == "Darwin":
-        result = subprocess.run(
-            ["route", "-n", "get", "default"],
-            capture_output=True,
-            text=True
-        )
+    try:
+        if operating_system == "Darwin":
+            result = subprocess.run(
+                ["route", "-n", "get", "default"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if line.strip().startswith("gateway:"):
+                        return line.split(":", 1)[1].strip() or None
+            result = subprocess.run(
+                ["route", "-n", "get", "-inet6", "default"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if line.strip().startswith("gateway:"):
+                        return line.split(":", 1)[1].strip() or None
 
-        for line in result.stdout.splitlines():
-            if "gateway:" in line:
-                return line.split()[1]
-            
-    # Windows reports gateway addresses in `ipconfig` output.
-    elif operating_system == "Windows":
-        result = subprocess.run(
-            ["ipconfig"],
-            capture_output=True,
-            text=True
-        )
-
-        for line in result.stdout.splitlines():
-            if "Default Gateway" in line:
-                parts = line.split(":")
-                if len(parts) > 1:
-                    gateway = parts[1].strip()
+        elif operating_system == "Windows":
+            powershell = shutil.which("powershell") or shutil.which("pwsh")
+            if powershell:
+                result = subprocess.run(
+                    [
+                        powershell,
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Get-NetRoute -AddressFamily IPv4 "
+                        "-DestinationPrefix '0.0.0.0/0' | "
+                        "Sort-Object RouteMetric | Select-Object -First 1 "
+                        "-ExpandProperty NextHop",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    gateway = result.stdout.strip().splitlines()
                     if gateway:
-                        return gateway
-                    
-    # Linux includes the gateway after "default via" in `ip route` output.
-    elif operating_system == "Linux":
-        result = subprocess.run(
-            ["ip", "route"],
-            capture_output=True,
-            text=True
-        )
+                        candidate = gateway[0].strip()
+                        try:
+                            ipaddress.ip_address(candidate.split("%", 1)[0])
+                            return candidate
+                        except ValueError:
+                            pass
 
-        for line in result.stdout.splitlines():
-            if line.startswith("default via"):
-                return line.split()[2]
+            # Fall back to ipconfig on older or restricted Windows systems.
+            result = subprocess.run(
+                ["ipconfig"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode == 0:
+                lines = result.stdout.splitlines()
+                for index, line in enumerate(lines):
+                    if "default gateway" in line.lower():
+                        values = [line.split(":", 1)[-1].strip()]
+                        if not values[0] and index + 1 < len(lines):
+                            values.append(lines[index + 1].strip())
+                        for gateway in values:
+                            if gateway:
+                                try:
+                                    ipaddress.ip_address(
+                                        gateway.split("%", 1)[0]
+                                    )
+                                    return gateway
+                                except ValueError:
+                                    continue
+
+        elif operating_system == "Linux":
+            for family in ("-4", "-6"):
+                result = subprocess.run(
+                    ["ip", family, "route", "show", "default"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        parts = line.split()
+                        if "via" in parts:
+                            return parts[parts.index("via") + 1]
+
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return None
 
     return None
+
+
+def get_network_status(internet, dns, https):
+    """Summarize connectivity without hiding the individual DNS and HTTPS checks."""
+    if not internet:
+        return "Disconnected"
+    if not dns or not https:
+        return "Partially Connected"
+    return "Connected"
+
+
+def calculate_quick_scan_status(results):
+    """Return the most severe status among the supplied scan results."""
+    if "[FAIL]" in results:
+        return "[FAIL]"
+    if "[WARNING]" in results or "[UNKNOWN]" in results:
+        return "[WARNING]"
+    return "[PASS]"
 
 
 # ==============================
@@ -154,29 +238,61 @@ def get_network_information():
     gateway = get_default_gateway()
 
     # Ask the operating system which local address it would use for internet
-    # traffic, then match that address to the corresponding network interface.
+    # traffic, supporting both IPv4 and IPv6 routes.
     ip_address = None
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route_socket:
-            route_socket.connect(("8.8.8.8", 53))
-            ip_address = route_socket.getsockname()[0]
-    except OSError:
-        pass
+    address_family = None
+    route_destinations = (
+        (socket.AF_INET, ("8.8.8.8", 53)),
+        (socket.AF_INET6, ("2001:4860:4860::8888", 53, 0, 0)),
+    )
+    for family, destination in route_destinations:
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as route_socket:
+                route_socket.connect(destination)
+                ip_address = route_socket.getsockname()[0]
+                address_family = family
+                break
+        except OSError:
+            continue
+
+    if not ip_address:
+        try:
+            addresses = socket.getaddrinfo(
+                hostname, None, type=socket.SOCK_DGRAM
+            )
+            for family, _, _, _, address in addresses:
+                local_ip = address[0]
+                if not ipaddress.ip_address(local_ip.split("%", 1)[0]).is_loopback:
+                    ip_address = local_ip
+                    address_family = family
+                    break
+        except (socket.gaierror, OSError, ValueError):
+            pass
 
     # psutil provides the IP, subnet mask, MAC address, and up/down state
     # for each named network interface.
-    interfaces = psutil.net_if_addrs()
-    interface_stats = psutil.net_if_stats()
+    try:
+        interfaces = psutil.net_if_addrs()
+        interface_stats = psutil.net_if_stats()
+    except (psutil.Error, OSError):
+        interfaces = {}
+        interface_stats = {}
+
     interface = None
     subnet_mask = None
     mac_address = None
     for name, addresses in interfaces.items():
-        ipv4 = next((address for address in addresses
-                     if address.family == socket.AF_INET
-                     and address.address == ip_address), None)
-        if ipv4:
+        local_address = next(
+            (
+                address for address in addresses
+                if address.family == address_family
+                and address.address == ip_address
+            ),
+            None,
+        )
+        if local_address:
             interface = name
-            subnet_mask = ipv4.netmask
+            subnet_mask = local_address.netmask
             link_family = getattr(psutil, "AF_LINK", None)
             mac = next((address.address for address in addresses
                         if address.family == link_family), None)
@@ -184,29 +300,24 @@ def get_network_information():
                 mac_address = mac
             break
 
-    if not ip_address:
-        try:
-            local_ip = socket.gethostbyname(hostname)
-
-            # Avoids reporting a loopback address as the LAN IP
-            if not local_ip.startswith("127."):
-                ip_address = local_ip
-
-        except socket.gaierror:
-            ip_address = None
-
     # Test a direct connection by IP so this check does not depend on DNS.
-    try:
-        with socket.create_connection(("8.8.8.8", 53), timeout=3):
-            internet_status = True
-    except OSError:
-        internet_status = False
+    internet_status = False
+    for destination in (
+        ("1.1.1.1", 443),
+        ("2606:4700:4700::1111", 443),
+    ):
+        try:
+            with socket.create_connection(destination, timeout=3):
+                internet_status = True
+                break
+        except OSError:
+            continue
 
     # A successful name lookup confirms that DNS resolution is available.
     try:
-        socket.gethostbyname("google.com")
+        socket.getaddrinfo("google.com", None, type=socket.SOCK_STREAM)
         dns_status = True
-    except socket.gaierror:
+    except (socket.gaierror, OSError):
         dns_status = False
 
     # Request a secure web page to check end-to-end HTTPS access.
@@ -217,8 +328,10 @@ def get_network_information():
     except (urllib.error.URLError, TimeoutError, OSError):
         https_connected = False
 
-    interface_up = bool(interface and interface_stats.get(interface)
-                        and interface_stats[interface].isup)
+    interface_up = bool(
+        interface and interface_stats.get(interface)
+        and interface_stats[interface].isup
+    )
     gateway_status = bool(gateway)
     # Keep short compatibility keys for the diagnostic and descriptive keys
     # for the network information screen and any other callers.
@@ -231,7 +344,9 @@ def get_network_information():
         "https": https_connected,
         "https_working": https_connected,
         "internet": internet_status,
-        "status": "Connected" if interface_up and gateway_status and internet_status else "Disconnected",
+        "status": get_network_status(
+            internet_status, dns_status, https_connected
+        ),
         "interface": interface,
         "interface_up": interface_up,
         "gateway": gateway,
@@ -261,6 +376,17 @@ def network_diagnostic():
     print("Subnet Mask: " + (results["subnet_mask"] or "Unavailable"))
     print("MAC Address: " + (results["mac_address"] or "Unavailable"))
     print("Network Status: " + results["status"])
+    if results["status"] == "Partially Connected":
+        failed_checks = []
+        if not results["dns"]:
+            failed_checks.append("DNS resolution")
+        if not results["https"]:
+            failed_checks.append("HTTPS")
+        print(
+            "Internet access is available, but "
+            + " and ".join(failed_checks)
+            + " check(s) failed."
+        )
 
     print("\nRunning diagnostic....\n")
     # Use one list of labels and results to print each check consistently.
@@ -289,206 +415,827 @@ def network_diagnostic():
     return results
 
 
+
 # ==============================
 # Security Status
 # ==============================
 
 def security_status(display=True):
-    """Check the operating system's firewall status and report it to the user."""
+    """Check the OS-reported firewall status.
 
+    Returns:
+        True: Firewall reports enabled.
+        False: Firewall reports disabled.
+        None: Status could not be determined reliably.
+    """
     operating_system = platform.system()
+    enabled = None
+    detail = "Firewall status could not be determined."
 
     if display:
-        print("\n========================================\nSECURITY STATUS\n========================================")
+        print(
+            "\n========================================"
+            "\nSECURITY STATUS"
+            "\n========================================"
+        )
+
+    try:
+        if operating_system == "Darwin":
+            # macOS Application Firewall
+            result = subprocess.run(
+                [
+                    "/usr/libexec/ApplicationFirewall/socketfilterfw",
+                    "--getglobalstate",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+
+            output = result.stdout.strip().lower()
+
+            if result.returncode == 0:
+                reports_disabled = bool(
+                    re.search(r"\bfirewall is disabled\b", output)
+                )
+                reports_enabled = bool(
+                    re.search(r"\bfirewall is enabled\b", output)
+                )
+                if reports_disabled and not reports_enabled:
+                    enabled = False
+                elif reports_enabled and not reports_disabled:
+                    enabled = True
+                else:
+                    detail = "Unrecognized or conflicting macOS firewall response."
+            else:
+                detail = "macOS firewall command failed."
+
+        elif operating_system == "Windows":
+            # Check all Windows firewall profiles.
+            powershell = shutil.which("powershell") or shutil.which("pwsh")
+            if not powershell:
+                detail = "PowerShell is not available."
+                result = None
+            else:
+                result = subprocess.run(
+                    [
+                        powershell,
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Get-NetFirewallProfile | "
+                        "ForEach-Object { $_.Enabled }",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+
+            if result is not None and result.returncode == 0:
+                values = [
+                    line.strip().lower()
+                    for line in result.stdout.splitlines()
+                    if line.strip()
+                ]
+
+                # Three profiles are normally expected:
+                # Domain, Private, and Public.
+                if len(values) == 3 and all(
+                    value in ("true", "false") for value in values
+                ):
+                    if all(value == "true" for value in values):
+                        enabled = True
+                    elif all(value == "false" for value in values):
+                        enabled = False
+                    else:
+                        detail = "Windows firewall profiles have mixed states."
+                else:
+                    detail = "Windows firewall profiles could not be verified."
+            elif result is not None:
+                detail = "Windows firewall command failed."
+
+        elif operating_system == "Linux":
+            managers = []
+            ufw = shutil.which("ufw")
+            firewalld = shutil.which("firewall-cmd")
+
+            if ufw:
+                result = subprocess.run(
+                    [ufw, "status"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                output = result.stdout.strip().lower().splitlines()
+                status_line = output[0].strip() if output else ""
+                if (
+                    result.returncode == 0
+                    and not result.stderr.strip()
+                    and status_line == "status: active"
+                ):
+                    managers.append(("UFW", True))
+                elif (
+                    result.returncode == 0
+                    and not result.stderr.strip()
+                    and status_line == "status: inactive"
+                ):
+                    managers.append(("UFW", False))
+                else:
+                    managers.append(("UFW", None))
+
+            if firewalld:
+                result = subprocess.run(
+                    [firewalld, "--state"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                output = result.stdout.strip().lower()
+                if (
+                    result.returncode == 0
+                    and not result.stderr.strip()
+                    and output == "running"
+                ):
+                    managers.append(("firewalld", True))
+                elif (
+                    result.returncode == 0
+                    and not result.stderr.strip()
+                    and output == "not running"
+                ):
+                    managers.append(("firewalld", False))
+                else:
+                    managers.append(("firewalld", None))
+
+            if not managers:
+                detail = "No supported firewall manager was found."
+            elif any(state is None for _, state in managers):
+                detail = "At least one installed firewall manager could not be verified."
+            else:
+                states = {state for _, state in managers}
+                if len(states) > 1:
+                    detail = "Installed firewall managers report conflicting states."
+                elif states == {True}:
+                    enabled = True
+                else:
+                    # An inactive service does not prove that no independent
+                    # firewall rules are installed in the kernel.
+                    detail = (
+                        "The firewall manager is inactive, but independent "
+                        "firewall rules cannot be ruled out."
+                    )
+
+        else:
+            detail = "Firewall detection is not supported on this OS."
+
+    except (OSError, subprocess.SubprocessError) as error:
+        # Includes missing commands, permission errors, and timeouts.
+        detail = f"Firewall check failed: {type(error).__name__}."
+
+    if display:
+        if enabled is True:
+            print("\nFirewall: ENABLED ✓")
+        elif enabled is False:
+            print("\nFirewall: DISABLED ✗")
+        else:
+            print(f"\nFirewall: UNKNOWN — {detail}")
+
+    return enabled
+
+
+# ==============================
+# Disk Encryption Status
+# ==============================
+
+def disk_encryption_status(display=True):
+    """Check OS-reported encryption for the system volume.
+
+    Returns True when encryption is positively identified, False when the
+    system volume is positively identified as unencrypted, and None when its
+    status cannot be determined reliably.
+    """
+    operating_system = platform.system()
     enabled = None
+    label = "Disk Encryption"
+    detail = "Disk encryption status could not be determined."
 
-    if operating_system == "Darwin":
-        # Check macOS firewall
-        result = subprocess.run(
-            ["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"],
-            capture_output=True,
-            text=True
-        )
-        if "enabled" in result.stdout.lower():
-            enabled = True
-        elif "disabled" in result.stdout.lower():
-            enabled = False
+    try:
+        if operating_system == "Darwin":
+            label = "FileVault"
+            result = subprocess.run(
+                ["fdesetup", "status"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            output = result.stdout.strip().lower()
+            if result.returncode == 0:
+                if "filevault is on" in output:
+                    enabled = True
+                elif "filevault is off" in output:
+                    enabled = False
+                else:
+                    detail = "Unrecognized FileVault status response."
+            else:
+                detail = "FileVault status command failed."
 
-    elif operating_system == "Windows":
-        # Check Windows firewall
-        result = subprocess.run(
-            ['powershell', '-Command','Get-NetFirewallProfile | Select-Object Name, Enabled'],
-            capture_output=True,
-            text=True
-        )
-        values = [line.strip().lower() for line in result.stdout.splitlines() if line.strip().lower() in ("true", "false")]
-        if values:
-            enabled = all(value == "true" for value in values)
+        elif operating_system == "Windows":
+            label = "BitLocker"
+            powershell = shutil.which("powershell") or shutil.which("pwsh")
+            command = (
+                "$v = Get-BitLockerVolume -MountPoint $env:SystemDrive "
+                "-ErrorAction Stop; "
+                "$v | Select-Object MountPoint,VolumeStatus,ProtectionStatus "
+                "| ConvertTo-Json -Compress"
+            )
+            if not powershell:
+                detail = "PowerShell is not available."
+            else:
+                result = subprocess.run(
+                    [
+                        powershell,
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        command,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            if powershell and result.returncode == 0:
+                try:
+                    volume = json.loads(result.stdout)
+                    volume_status = str(volume.get("VolumeStatus", "")).lower()
+                    protection_status = str(volume.get("ProtectionStatus", "")).lower()
+                    if volume_status == "fullyencrypted" and protection_status == "on":
+                        enabled = True
+                    elif volume_status == "fullydecrypted":
+                        enabled = False
+                    else:
+                        detail = "BitLocker status is incomplete or protection is suspended."
+                except (ValueError, AttributeError):
+                    detail = "Unrecognized BitLocker status response."
+            elif powershell:
+                detail = "BitLocker status could not be read."
+
+        elif operating_system == "Linux":
+            root_result = subprocess.run(
+                [
+                    "findmnt", "-n", "-o", "SOURCE,FSTYPE", "--target", "/"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            root_line = next(
+                (line.strip() for line in root_result.stdout.splitlines()
+                 if line.strip()),
+                "",
+            )
+            root_fields = root_line.split(maxsplit=1)
+            root_source = root_fields[0] if root_fields else ""
+            filesystem = root_fields[1].split()[0] if len(root_fields) > 1 else ""
+            # findmnt appends Btrfs subvolume details, e.g.
+            # /dev/mapper/cryptroot[/@]. lsblk needs just the block device.
+            root_source = root_source.split("[", 1)[0]
+            if root_result.returncode != 0 or not root_source.startswith("/"):
+                detail = "The root storage device could not be identified."
+            elif "," in root_source or filesystem.lower() == "overlay":
+                detail = "The root filesystem source is not a single supported block device."
+            else:
+                devices_result = subprocess.run(
+                    [
+                        "lsblk", "--json", "--inverse", "--paths",
+                        "--output", "NAME,KNAME,TYPE,PKNAME,MAJ:MIN",
+                        root_source,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if devices_result.returncode != 0:
+                    detail = "The root storage device layout could not be read."
+                else:
+                    try:
+                        device_data = json.loads(devices_result.stdout)
+                        root_devices = device_data.get("blockdevices", [])
+                        nodes = []
+
+                        def collect_nodes(devices):
+                            for device in devices:
+                                nodes.append(device)
+                                collect_nodes(device.get("children", []))
+
+                        collect_nodes(root_devices)
+                        root_realpath = os.path.realpath(root_source)
+                        root_basename = os.path.basename(root_source)
+                        root_matches = [
+                            node for node in nodes
+                            if root_source in (
+                                node.get("name"), node.get("kname")
+                            )
+                            or root_realpath in (
+                                os.path.realpath(node.get("name", "")),
+                                os.path.realpath(node.get("kname", "")),
+                            )
+                            or root_basename in (
+                                os.path.basename(node.get("name", "")),
+                                os.path.basename(node.get("kname", "")),
+                            )
+                        ]
+                        if len(root_matches) != 1:
+                            detail = "The root device could not be matched to its block-device layout."
+                        else:
+                            root_device = root_matches[0]
+                            ancestors = []
+
+                            def collect_device_tree(device):
+                                ancestors.append(device)
+                                for parent in device.get("children", []):
+                                    collect_device_tree(parent)
+
+                            collect_device_tree(root_device)
+                            crypt_devices = [
+                                device for device in ancestors
+                                if str(device.get("type", "")).lower() == "crypt"
+                            ]
+
+                            if crypt_devices:
+                                for device in crypt_devices:
+                                    names = (
+                                        os.path.basename(root_source),
+                                        os.path.basename(device.get("name", "")),
+                                        os.path.basename(device.get("kname", "")),
+                                    )
+                                    for mapping_name in dict.fromkeys(
+                                        name for name in names if name
+                                    ):
+                                        crypt_result = subprocess.run(
+                                            [
+                                                "cryptsetup", "status",
+                                                mapping_name,
+                                            ],
+                                            capture_output=True,
+                                            text=True,
+                                            timeout=5,
+                                            check=False,
+                                        )
+                                        crypt_output = crypt_result.stdout.lower()
+                                        if (
+                                            crypt_result.returncode == 0
+                                            and re.search(
+                                                r"^\s*type:\s*luks(?:\d+)?\s*$",
+                                                crypt_output,
+                                                re.MULTILINE,
+                                            )
+                                        ):
+                                            enabled = True
+                                            break
+                                    if enabled is True:
+                                        break
+                                if enabled is not True:
+                                    detail = "A device-mapper layer was found, but LUKS could not be confirmed."
+                            else:
+                                detail = (
+                                    "No LUKS mapping was confirmed for the root "
+                                    "filesystem; other encryption methods cannot be ruled out."
+                                )
+                    except (ValueError, AttributeError, TypeError):
+                        detail = "Unrecognized block-device layout response."
+        else:
+            detail = f"Disk encryption detection is not implemented for {get_operating_system()}."
+
+    except (OSError, subprocess.SubprocessError) as error:
+        detail = f"Encryption check failed: {type(error).__name__}."
+
+    if display:
+        if enabled is True:
+            print(f"\n{label}: ENABLED ✓")
+        elif enabled is False:
+            print(f"\n{label}: DISABLED ✗")
+        else:
+            print(f"\nDisk Encryption: UNKNOWN — {detail}")
+
+    return enabled
+
+
+def check_os_updates(display=True):
+    """Check whether the native OS update service reports pending updates.
+
+    Returns True if updates are available, False if none are reported, and
+    None when the platform or update service cannot be checked.
+    """
+    operating_system = platform.system()
+    command = None
+    detail = "OS update checks are not supported on this system."
+
+    if operating_system == "Windows":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell:
+            script = (
+                "$ErrorActionPreference = 'Stop'; "
+                "$session = New-Object -ComObject Microsoft.Update.Session; "
+                "$result = $session.CreateUpdateSearcher().Search("
+                "\"IsInstalled=0 and Type='Software'\"); "
+                "if ($result.Updates.Count -gt 0) { "
+                "'UpdatesAvailable' } else { 'UpToDate' }"
+            )
+            command = [powershell, "-NoProfile", "-NonInteractive", "-Command", script]
+            detail = "Windows Update could not be queried."
+        else:
+            detail = "PowerShell is not available."
+
+    elif operating_system == "Darwin":
+        software_update = shutil.which("softwareupdate")
+        if software_update:
+            command = [software_update, "--list"]
+            detail = "macOS Software Update could not be queried."
+        else:
+            detail = "The macOS Software Update command is not available."
 
     elif operating_system == "Linux":
-        # First check if the command exitst of the system / if command is found, check firewall status
-        if shutil.which("ufw"):
-                result = subprocess.run(
-                    ['ufw', 'status'],
-                    capture_output=True,
-                    text=True
-                )
-                if "inactive" in result.stdout.lower():
-                    enabled = False
-                elif "active" in result.stdout.lower():
-                    enabled = True
-
-        elif shutil.which("firewall-cmd"):
-                result = subprocess.run(
-                    ['firewall-cmd', '--state'],
-                    capture_output=True,
-                    text=True
-                )
-                if "not running" in result.stdout.lower():
-                    enabled = False
-                elif "running" in result.stdout.lower():
-                    enabled = True
-
-        elif shutil.which("iptables"):
-                result = subprocess.run(
-                    ['iptables', '-L', '-n'],
-                    capture_output=True,
-                    text=True
-                )
-                if result.returncode == 0:
-                    output = result.stdout.lower()
-
-                    if "policy drop" in output or "policy reject" in output:
-                        enabled = True
-                    elif "policy accept" in output:
-                        enabled = False
-                else:
-                        print("\nUnable to check iptables rules.")
+        if shutil.which("apt-get"):
+            command = ["apt-get", "-s", "upgrade"]
+            detail = "The package update list could not be checked."
+        elif shutil.which("dnf"):
+            command = ["dnf", "check-update", "--quiet"]
+            detail = "The DNF update list could not be checked."
+        elif shutil.which("yum"):
+            command = ["yum", "check-update"]
+            detail = "The YUM update list could not be checked."
         else:
-            if display:
-                print("\nNo firewall management command found on this Linux system.")
-            return None
+            detail = "No supported Linux package manager was found."
+
+    available = None
+    if command:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            available = _parse_update_check_result(operating_system, command[0], result)
+            if available is None:
+                detail = "The update service failed or returned an unrecognized status."
+        except (OSError, subprocess.SubprocessError) as error:
+            detail = f"OS update check failed: {type(error).__name__}."
 
     if display:
-        if enabled is None:
-            print("\nFirewall status could not be determined.")
+        if available is True:
+            print("\nOperating System Updates: AVAILABLE")
+            print("Install recommended updates using your system's update settings.")
+        elif available is False:
+            print("\nOperating System Updates: No updates reported")
         else:
-            print(f"\nFirewall: {'ENABLED ✓' if enabled else 'DISABLED ✗'}")
-    return enabled
+            print(f"\nOperating System Updates: UNKNOWN — {detail}")
+            if operating_system == "Linux":
+                print("Update availability depends on the package manager's local package list.")
+    return available
+
+
+def _parse_update_check_result(operating_system, command, result):
+    """Interpret only documented successful update-check outcomes."""
+    if operating_system == "Windows":
+        if result.returncode != 0 or result.stderr.strip():
+            return None
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if len(lines) != 1 or lines[0] not in ("UpdatesAvailable", "UpToDate"):
+            return None
+        return lines[0] == "UpdatesAvailable"
+
+    if operating_system == "Darwin":
+        if result.returncode != 0 or result.stderr.strip():
+            return None
+        output = result.stdout.lower()
+        update_lines = [
+            line for line in result.stdout.splitlines()
+            if line.lstrip().startswith("* Label:")
+        ]
+        no_updates = bool(re.search(
+            r"^\s*no new software available\.?\s*$",
+            output,
+            re.IGNORECASE | re.MULTILINE,
+        ) or re.search(
+            r"^\s*no updates are available\.?\s*$",
+            output,
+            re.IGNORECASE | re.MULTILINE,
+        ))
+        if update_lines and no_updates:
+            return None
+        if update_lines:
+            return True
+        if no_updates and not re.search(
+            r"\b(error|failed|cannot|could not)\b", output
+        ):
+            return False
+        return None
+
+    if operating_system != "Linux":
+        return None
+
+    if command == "apt-get":
+        if result.returncode != 0 or re.search(
+            r"^\s*(?:Err:|E:)",
+            f"{result.stdout}\n{result.stderr}",
+            re.IGNORECASE | re.MULTILINE,
+        ):
+            return None
+        if re.search(
+            r"^\s*The following packages have been kept back:",
+            result.stdout,
+            re.IGNORECASE | re.MULTILINE,
+        ):
+            return True
+        if re.search(r"^\s*Inst\s+", result.stdout, re.IGNORECASE | re.MULTILINE):
+            return True
+        summary = re.search(
+            r"^\s*(\d+)\s+upgraded,\s+\d+\s+newly installed,"
+            r"\s+\d+\s+to remove and\s+\d+\s+not upgraded\.?\s*$",
+            result.stdout,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if summary:
+            return int(summary.group(1)) > 0
+        return None
+
+    if command in ("dnf", "yum"):
+        if result.returncode == 100:
+            if result.stderr.strip():
+                return None
+            package_rows = [
+                line for line in result.stdout.splitlines()
+                if re.match(r"^\s*\S+\.\S+\s+\S+\s+\S+\s*$", line)
+            ]
+            return True if package_rows else None
+        if result.returncode != 0:
+            return None
+        if not result.stdout.strip() and not result.stderr.strip():
+            return False
+        return None
+
+    return None
+
+
+def security_assessment():
+    """Summarize firewall, disk encryption, and operating-system update status."""
+    print(
+        "\n========================================"
+        "\nSYSTEM SECURITY ASSESSMENT"
+        "\n========================================"
+    )
+
+    firewall = security_status(display=False)
+    encryption = disk_encryption_status(display=False)
+    updates = check_os_updates(display=False)
+    checks = []
+
+    if firewall is True:
+        checks.append(("Firewall", "[PASS]", "Reported enabled"))
+    elif firewall is False:
+        checks.append(("Firewall", "[FAIL]", "Reported disabled"))
+    else:
+        checks.append(("Firewall", "[UNKNOWN]", "Status unavailable"))
+
+    if encryption is True:
+        checks.append(("Disk Encryption", "[PASS]", "Reported enabled"))
+    elif encryption is False:
+        checks.append(("Disk Encryption", "[WARNING]", "Reported disabled"))
+    else:
+        checks.append(("Disk Encryption", "[UNKNOWN]", "Status unavailable"))
+
+    if updates is True:
+        checks.append(("OS Updates", "[WARNING]", "Updates are available"))
+    elif updates is False:
+        checks.append(("OS Updates", "[PASS]", "No updates reported"))
+    else:
+        checks.append(("OS Updates", "[UNKNOWN]", "Could not be checked"))
+
+    for label, status, detail in checks:
+        print(f"{label:<22} {status:<12} {detail}")
+
+    if firewall is False:
+        overall_result = "[FAIL]"
+        print("\nReview firewall settings and enable an appropriate firewall.")
+    elif (
+        encryption is False
+        or updates is True
+        or any(status == "[UNKNOWN]" for _, status, _ in checks)
+    ):
+        overall_result = "[WARNING]"
+        if encryption is False:
+            print("Enable disk encryption to help protect data if the device is lost.")
+        if updates is True:
+            print("Install the available operating-system updates.")
+        if any(status == "[UNKNOWN]" for _, status, _ in checks):
+            print("Some security checks could not be verified on this system.")
+    else:
+        overall_result = "[PASS]"
+        print("\nNo issues were identified by the available security checks.")
+
+    print(f"\nOverall Security: {overall_result}")
+    print("This assessment checks reported settings and available OS updates.")
+    return {
+        "Firewall": firewall,
+        "Disk Encryption": encryption,
+        "OS Updates": updates,
+        "Overall Result": overall_result,
+    }
 
 
 # ==============================
 # Quick System & Network Scan
 # ==============================
 
+def _quick_scan_check_rows(system, network, statuses, firewall_text):
+    """Build the shared display and report rows for a Quick Scan."""
+    encryption_value = statuses.get("Encryption Value")
+    if encryption_value is None and "Encryption Results" in statuses:
+        encryption_value = statuses["Encryption Results"]
+
+    encryption_result = statuses.get("Encryption Result")
+    if encryption_value is True:
+        encryption_result = "[PASS]"
+    elif encryption_value is False:
+        encryption_result = "[WARNING]"
+    elif encryption_result == "[PASS]":
+        encryption_value = True
+    elif encryption_result in ("[FAIL]", "[WARNING]"):
+        encryption_value = False
+        encryption_result = "[WARNING]"
+    else:
+        encryption_result = "[UNKNOWN]"
+
+    encryption_text = (
+        "Unknown" if encryption_value is None
+        else "Enabled" if encryption_value is True
+        else "Disabled"
+    )
+    updates = statuses.get("OS Updates")
+    if updates is True:
+        updates_text, updates_result = "Available", "[WARNING]"
+    elif updates is False:
+        updates_text, updates_result = "None reported", "[PASS]"
+    else:
+        updates_text, updates_result = "Unknown", "[UNKNOWN]"
+    return (
+        ("SYSTEM", (
+            ("CPU Usage", f"{system['CPU Usage']:.1f}%", statuses["CPU Result"]),
+            ("Memory Usage", f"{system['Memory Usage']:.1f}%", statuses["Memory Result"]),
+            ("Storage Usage", f"{system['Disk Usage']:.1f}%", statuses["Disk Result"]),
+        )),
+        ("NETWORK", (
+            (
+                "Internet Connection",
+                "Connected" if network["internet"] else "Not Connected",
+                statuses["Internet Result"],
+            ),
+            (
+                "DNS Resolution",
+                "Working" if network["dns"] else "Not Working",
+                statuses["DNS Result"],
+            ),
+            (
+                "Default Gateway",
+                "Found" if network["gateway_status"] else "Not Found",
+                statuses["Gateway Result"],
+            ),
+            (
+                "HTTPS Connectivity",
+                "Working" if network["https"] else "Not Working",
+                statuses["HTTPS Result"],
+            ),
+        )),
+        ("SECURITY", (
+            ("Firewall Status", firewall_text, statuses["Firewall Result"]),
+            ("Disk Encryption", encryption_text, encryption_result),
+            ("OS Updates", updates_text, updates_result),
+        )),
+    )
+
+
 def quick_scan():
     """Run a quick system, network, and firewall health check."""
     print("\n========================================\nBYTE WIZARD SCAN\n========================================")
 
-
     system = get_system_information()
     network = get_network_information()
-
-    print("\nSYSTEM\n")
+    firewall = security_status(display=False)
+    encryption = disk_encryption_status(display=False)
+    updates = check_os_updates(display=False)
+    scan_time = datetime.datetime.now()
 
     cpu_result = check_threshold(system["CPU Usage"], 70, 90)
-
-    print(f"{'CPU Usage':<25} {system['CPU Usage']:>6.5f}%     {cpu_result}")
-
     memory_result = check_threshold(system["Memory Usage"], 80, 90)
-
-    print(f"{'Memory Usage':<25} {system['Memory Usage']:>6.4f}%     {memory_result}")
-
     disk_result = check_threshold(system["Disk Usage"], 80, 90)
-
-    print(f"{'Storage Usage':<25} {system['Disk Usage']:>6.4f}%     {disk_result}")
-
-    print("\nNETWORK\n")
-
-    # Internet
     internet_result = "[PASS]" if network["internet"] else "[FAIL]"
-    print(f"{'Internet Connection':<25} {('Connected' if network['internet'] else 'Not Connected'):<12} {internet_result}")
-
-    # DNS
     dns_result = "[PASS]" if network["dns"] else "[FAIL]"
-    print(f"{'DNS Resolution':<25} {('Working' if network['dns'] else 'Not Working'):<12} {dns_result}")
-
-    # Gateway
     gateway_result = "[PASS]" if network["gateway_status"] else "[FAIL]"
-    print(f"{'Default Gateway':<25} {('Found' if network['gateway_status'] else 'Not Found'):<12} {gateway_result}")
-
-    # HTTPS
     https_result = "[PASS]" if network["https"] else "[FAIL]"
-    print(f"{'HTTPS Connectivity':<25} {('Working' if network['https'] else 'Not Working'):<12} {https_result}")
-
-    print("\nSECURITY\n")
-    firewall = security_status(display=False)
     firewall_result = "[UNKNOWN]" if firewall is None else ("[PASS]" if firewall else "[FAIL]")
     firewall_text = "Unknown" if firewall is None else ("Enabled" if firewall else "Disabled")
-    print(f"{'Firewall Status':<25} {firewall_text:<12} {firewall_result}")
-
-    # Unknown firewall status is reported but does not count as a failure.
-    all_results = (
-        cpu_result, memory_result, disk_result, internet_result,
-        dns_result, gateway_result, https_result,
-        *(() if firewall is None else (firewall_result,)),
+    encryption_result = (
+        "[UNKNOWN]" if encryption is None
+        else "[PASS]" if encryption is True
+        else "[WARNING]"
+    )
+    updates_result = (
+        "[UNKNOWN]" if updates is None
+        else "[WARNING]" if updates
+        else "[PASS]"
     )
 
-    if "[FAIL]" in all_results:
-        overall_result = "[FAIL]"
-    elif "[WARNING]" in all_results:
-        overall_result = "[WARNING]"
-    else:
-        overall_result = "[PASS]"
+    results = (
+        cpu_result, memory_result, disk_result, internet_result, dns_result,
+        gateway_result, https_result, firewall_result, encryption_result,
+        updates_result,
+    )
+    overall_result = calculate_quick_scan_status(results)
+
+    statuses = {
+        "CPU Result": cpu_result,
+        "Memory Result": memory_result,
+        "Disk Result": disk_result,
+        "Internet Result": internet_result,
+        "DNS Result": dns_result,
+        "Gateway Result": gateway_result,
+        "HTTPS Result": https_result,
+        "Firewall Result": firewall_result,
+        "Encryption Result": encryption_result,
+        "Encryption Value": encryption,
+        "OS Updates": updates,
+        "OS Updates Result": updates_result,
+        "Overall Result": overall_result,
+    }
+    checks = _quick_scan_check_rows(system, network, statuses, firewall_text)
+    statuses["Checks"] = checks
+
+    print(f"Scan Time: {scan_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    for section, section_checks in checks:
+        print(f"\n{section}\n")
+        for label, value, status in section_checks:
+            print(f"{label:<25} {value:<12} {status}")
 
     print("\n========================================")
     print(f"{'Overall Status:':<25} {overall_result}")
     print("========================================")
 
     if ask_yes_no("\nWould you like to save this scan as a .txt report?"):
-        save_quick_scan_report(system, network, {
-            "CPU Result": cpu_result, "Memory Result": memory_result,
-            "Disk Result": disk_result, "Internet Result": internet_result,
-            "DNS Result": dns_result, "Gateway Result": gateway_result,
-            "HTTPS Result": https_result, "Firewall Result": firewall_result,
-            "Overall Result": overall_result,
-        }, firewall_text)
+        save_quick_scan_report(
+            system, network, statuses, firewall_text, scan_time=scan_time
+        )
+
+    return statuses
 
 
 # ==============================
 # Quick System & Network Scan Save
 # ==============================
 
-def save_quick_scan_report(system, network, statuses, firewall_text="Unknown"):
+def save_quick_scan_report(
+    system, network, statuses, firewall_text="Unknown", scan_time=None
+):
     """Save the same timestamped Quick Scan summary shown on screen."""
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    scan_time = scan_time or datetime.datetime.now()
+    timestamp = scan_time.strftime("%Y-%m-%d_%H-%M-%S")
     report_name = f"byte_wizard_quick_scan_{timestamp}.txt"
-    checks = (
-        ("CPU Usage", f"{system['CPU Usage']:.1f}%", statuses["CPU Result"]),
-        ("Memory Usage", f"{system['Memory Usage']:.1f}%", statuses["Memory Result"]),
-        ("Storage Usage", f"{system['Disk Usage']:.1f}%", statuses["Disk Result"]),
-        ("Internet", "Connected" if network["internet"] else "Not Connected", statuses["Internet Result"]),
-        ("DNS", "Working" if network["dns"] else "Not Working", statuses["DNS Result"]),
-        ("Gateway", "Found" if network["gateway_status"] else "Not Found", statuses["Gateway Result"]),
-        ("HTTPS", "Working" if network["https"] else "Not Working", statuses["HTTPS Result"]),
-        ("Firewall", firewall_text, statuses["Firewall Result"]),
+    checks = statuses.get("Checks") or _quick_scan_check_rows(
+        system, network, statuses, firewall_text
     )
-    with open(report_name, "w", encoding="utf-8") as report:
-        report.write("========================================\n")
-        report.write("           BYTE WIZARD SCAN\n")
-        report.write("========================================\n")
-        report.write(f"Date/Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        report.write(f"Hostname: {platform.node()}\n")
-        report.write(f"Operating System: {get_operating_system()}\n\n")
-        for section, section_checks in (("SYSTEM", checks[:3]), ("NETWORK", checks[3:7]), ("SECURITY", checks[7:])):
-            report.write(f"{section}\n----------------------------------------\n")
-            for label, value, status in section_checks:
-                report.write(f"{label:<20} {value:<16} {status}\n")
-            report.write("\n")
-        report.write("========================================\n")
-        report.write(f"OVERALL STATUS: {statuses['Overall Result']}\n")
-        report.write("========================================\n")
+
+    try:
+        with open(report_name, "w", encoding="utf-8") as report:
+            report.write("========================================\n")
+            report.write("           BYTE WIZARD SCAN\n")
+            report.write("========================================\n")
+            report.write(
+                f"Date/Time: {scan_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            )
+            report.write(f"Hostname: {platform.node()}\n")
+            report.write(f"Operating System: {get_operating_system()}\n\n")
+            for section, section_checks in checks:
+                report.write(f"{section}\n----------------------------------------\n")
+                for label, value, status in section_checks:
+                    report.write(f"{label:<25} {value:<12} {status}\n")
+                report.write("\n")
+            report.write("========================================\n")
+            report.write(f"OVERALL STATUS: {statuses['Overall Result']}\n")
+            report.write("========================================\n")
+    except OSError as error:
+        print(f"\nCould not save the Quick Scan report: {error}")
+        return None
+
     print(f"\nReport saved as: {report_name}")
+    return report_name
 
 
         
@@ -584,7 +1331,8 @@ def system_diagnostic():
     if not issues_found:
         print("No system issues were detected.")
 
-    print(f"{'\nOverall Diagnostic:\n':<25} {overall_result}")
+    overall_label = "\nOverall Diagnostic:\n"
+    print(f"{overall_label:<25} {overall_result}")
 
     return {
         "CPU Result": cpu_result,
@@ -616,10 +1364,22 @@ def main_menu():
     print("\n1. Troubleshoot a Problem")
     print("2. System Options")
     print("3. Network Options")
-    print("4. Security Status")
+    print("4. Security")
     print("5. System Health")
    
     print("\n6. Exit")
+
+
+# ==============================
+# Security Menu
+# ==============================
+
+def security_menu():
+    """Print the numbered choices for security checks."""
+    print("\n========================================\nSECURITY\n========================================")
+    print("\n1. Run Security Assessment")
+    print("2. Check for OS Updates")
+    print("\n3. Return to Main Menu")
 
 
 # ==============================
@@ -906,8 +1666,8 @@ def view_system_information():
     print(f"{'Python Version:':<25}  {platform.python_version()}\n")
 
     print(f"{'CPU Cores:':<25}  {psutil.cpu_count()}")
-    print(f"{'Total Memory:':<25}  {results['Memory Total']:2f} GB")
-    print(f"{'Total Storage:':<25}  {results['Disk Total']:2f} GB")
+    print(f"{'Total Memory:':<25}  {results['Memory Total']:.2f} GB")
+    print(f"{'Total Storage:':<25}  {results['Disk Total']:.2f} GB")
 
 
 # ==============================
@@ -924,6 +1684,17 @@ def view_network_information():
     print(f"DNS Working: {'Yes' if results['dns_working'] else 'No'}")
     print(f"HTTPS Working: {'Yes' if results['https_working'] else 'No'}")
     print(f"Status: {results['status']}")
+    if results["status"] == "Partially Connected":
+        failed_checks = []
+        if not results["dns"]:
+            failed_checks.append("DNS resolution")
+        if not results["https"]:
+            failed_checks.append("HTTPS")
+        print(
+            "Internet access works, but "
+            + " and ".join(failed_checks)
+            + " failed."
+        )
     print(f"Interface: {results['interface'] or 'Unavailable'}")
     print(f"Default Gateway: {results['default_gateway'] or 'Unavailable'}")
     print(f"MAC Address: {results['mac_address'] or 'Unavailable'}")
@@ -1075,7 +1846,22 @@ def user_troubleshooting(user):
                 network_diagnostic()
             
         elif option == 4:
-            security_status()
+            while True:
+                security_menu()
+                sub_choice = input("\nPlease select a security option (1-3): ").strip()
+                if not sub_choice.isdigit() or int(sub_choice) not in range(1, 4):
+                    print("Invalid choice. Please enter a number from 1 to 3.")
+                    continue
+
+                sub_option = int(sub_choice)
+                if sub_option == 1:
+                    security_assessment()
+                elif sub_option == 2:
+                    check_os_updates()
+                else:
+                    # Return straight to the main menu without an extra prompt.
+                    break
+            continue
 
         elif option == 5:
             system_health_menu()
@@ -1116,10 +1902,34 @@ def user_troubleshooting(user):
 text = "Byte Wizard"
 ascii_title = pyfiglet.figlet_format(text)
 
+<<<<<<< Updated upstream
 print(ascii_title)
 print("Welcome to the Byte Wizard!")
 print("This tool will help you troubleshoot your computer.\n")
+=======
+    print(ascii_title)
+    print("Welcome to the Byte Wizard!")
+    print("This tool will help you troubleshoot your computer.\n")
 
+    try:
+        # Ask for a valid name before creating the user record.
+        while True:
+            user_name = input("Please enter your name:\n")
+
+            if user_name.strip() == "":
+                print("Please enter your name.\n")
+
+            elif not user_name.replace(" ", "").isalpha():
+                print("Please enter a valid name.\n")
+
+            else:
+                break
+>>>>>>> Stashed changes
+
+        # Enter the menu loop after setup is complete.
+        user_troubleshooting(user=User(name=user_name))
+    except (EOFError, KeyboardInterrupt):
+        print("\nInput cancelled. Goodbye!")
 
 # Ask for a name containing letters and spaces before creating the user record.
 while True:
