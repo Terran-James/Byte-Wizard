@@ -1902,48 +1902,26 @@ def user_troubleshooting(user):
 text = "Byte Wizard"
 ascii_title = pyfiglet.figlet_format(text)
 
-<<<<<<< Updated upstream
+
 print(ascii_title)
 print("Welcome to the Byte Wizard!")
 print("This tool will help you troubleshoot your computer.\n")
-=======
-    print(ascii_title)
-    print("Welcome to the Byte Wizard!")
-    print("This tool will help you troubleshoot your computer.\n")
 
-    try:
-        # Ask for a valid name before creating the user record.
-        while True:
-            user_name = input("Please enter your name:\n")
+try:
+    # Ask for a valid name before creating the user record.
+    while True:
+        user_name = input("Please enter your name:\n")
 
-            if user_name.strip() == "":
-                print("Please enter your name.\n")
+        if user_name.strip() == "":
+            print("Please enter your name.\n")
+        elif not user_name.replace(" ", "").isalpha():
+            print("Please enter a valid name.\n")
+        else:
+            break
 
-            elif not user_name.replace(" ", "").isalpha():
-                print("Please enter a valid name.\n")
+    # Enter the menu loop after setup is complete.
+    user_troubleshooting(user=User(name=user_name))
 
-            else:
-                break
->>>>>>> Stashed changes
+except (EOFError, KeyboardInterrupt):
+    print("\nInput cancelled. Goodbye!")
 
-        # Enter the menu loop after setup is complete.
-        user_troubleshooting(user=User(name=user_name))
-    except (EOFError, KeyboardInterrupt):
-        print("\nInput cancelled. Goodbye!")
-
-# Ask for a name containing letters and spaces before creating the user record.
-while True:
-    user_name = input("Please enter your name:\n")
-
-    if user_name.strip() == "":
-        print("Please enter your name.\n")
-
-    elif not user_name.replace(" ", "").isalpha():
-        print("Please enter a valid name.\n")
-
-    else:
-        break
-
-
-# Enter the menu loop after setup is complete.
-user_troubleshooting(user=User(name=user_name))
